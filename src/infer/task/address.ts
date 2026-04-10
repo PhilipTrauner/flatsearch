@@ -1,16 +1,13 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 
 import { z } from "zod";
 
+import { InferredAdressPrecision } from "../../type/inferred/address.ts";
 import { InferredDescription } from "../../type/inferred/description.ts";
 import { InferredFloorPlans } from "../../type/inferred/floor-plans.ts";
-import { InferredImages } from "../../type/inferred/images.ts";
 import { Manifest } from "../../type/manifest.ts";
-import { assertRequiredArgs, inferenceProvider, wantedProperties } from "../utility.ts";
-
-import type { InferredAddress } from "../../type/inferred/address.ts";
+import { assertRequiredArgs, inferenceProvider } from "../utility.ts";
 
 const parsed = parseArgs({
   options: {
@@ -21,9 +18,6 @@ const parsed = parseArgs({
       type: "string",
     },
     "file-path-in-inferred-traits": {
-      type: "string",
-    },
-    "file-path-in-inferred-images": {
       type: "string",
     },
     "file-path-in-inferred-floor-plans": {
@@ -38,7 +32,6 @@ assertRequiredArgs(parsed, [
   "file-path-in-manifest",
   "file-path-in-inferred-description",
   "file-path-in-inferred-traits",
-  "file-path-in-inferred-images",
   "file-path-in-inferred-floor-plans",
   "file-path-out-inferred-address",
 ]);
@@ -51,7 +44,6 @@ const maybeAppendDistrict = (address: string, district: string) =>
 const {
   values: { "file-path-in-manifest": inputManifest },
   values: { "file-path-in-inferred-description": inputInferredDescription },
-  values: { "file-path-in-inferred-images": inputInferredImages },
   values: { "file-path-in-inferred-floor-plans": inputInferredFloorPlans },
   values: { "file-path-out-inferred-address": output },
 } = parsed;
@@ -84,64 +76,37 @@ const candidates = [
     : []),
 ].flatMap((candidate) => (typeof candidate === "string" ? [candidate] : []));
 
-const AdressPrecision = z.enum(["house", "street", "district"]);
-type AdressPrecision = z.infer<typeof AdressPrecision>;
-
-const addresses: Record<AdressPrecision, string[]> = {
+const inferred: Record<InferredAdressPrecision, string[]> = {
   house: [],
   street: [],
-  district: [],
+  unknown: [],
 };
 for (const candidate of candidates) {
-  const Codec = z.object({
-    precision: AdressPrecision.meta({
-      description:
-        '"house" includes a house number, street address, and district\n"street" includes street address and district\n"district" only includes district',
-    }),
-  });
-
   const result = await provider.infer(
     {
-      prompt: `how precise is address? ${wantedProperties(Codec).join(", ")}\n\n${candidate}`,
+      prompt: `how precise is address?
+address is always in vienna, austria and does not need to include the city name
+
+precision "house" must include a numerical house number and the name of a street that actually exists
+a postal code (e.g. "1020") is not a house number (e.g. <street>, <postal-code>)
+
+precision "street" must include the name of a street that actually exists
+a numbered district alone (e.g. "2. Wiener Gemeindebezirk", "02. Bezirk, Leopoldstadt", "Wien, 02. Bezirk, Leopoldstadt") is not a street address
+
+"unknown" is everything that doesn't meet those criteria
+an approximate location (e.g. "nahe dem Wiener Prater und dem Viertel 2, Wien 1020 Wien, Österreich") should be classified as "unknown"
+a district name, postal code, and city name alone (e.g. "Leopoldstadt, 1020 Wien, Austria") should be classified as "unknown"
+a postal code, and city name alone (e.g. "1020 Wien") should be classified as "unknown"
+
+
+${candidate}`,
     },
-    Codec,
+    z.object({
+      precision: InferredAdressPrecision,
+    }),
   );
 
-  addresses[result.precision].push(candidate);
+  inferred[result.precision].push(candidate);
 }
 
-let address: string | undefined = addresses.house.at(0);
-if (typeof address === "undefined") {
-  const inferredImages = InferredImages.decode(
-    JSON.parse(await readFile(inputInferredImages, "utf-8")),
-  );
-
-  geoGuess: {
-    if (inferredImages.housefront.length === 0) {
-      break geoGuess;
-    }
-
-    const result = await provider.infer(
-      {
-        prompt: `find precise address of pictured house near ${addresses.street.at(0) ?? addresses.district.at(0) ?? candidates[0]}, assume no address when uncertain`,
-        images: await Promise.all(
-          inferredImages.housefront.map((image) =>
-            readFile(join(dirname(inputInferredImages), "image", image)),
-          ),
-        ),
-      },
-      z.object({
-        address: z.union([z.string(), z.null()]),
-      }),
-    );
-
-    if (result.address !== null) {
-      address = result.address;
-    }
-  }
-}
-
-const inferredAddress: InferredAddress = {
-  address: address ?? null,
-};
-await writeFile(output, JSON.stringify(inferredAddress, null, 4));
+await writeFile(output, JSON.stringify(inferred, null, 4));
