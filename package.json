@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@biomejs/biome": "^2.4.11",
     "@mistralai/mistralai": "^2.1.1",
     "css-select": "^6.0.0",
     "mime-types": "^3.0.2",
